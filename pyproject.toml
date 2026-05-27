@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ais-engine"
+version = "0.2.0"
+description = "Faithful, DB-free port of the verified AIS fuel-usage emission grid logic"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+# Upper bounds: validated against pandas 3.0.3 / numpy 2.4.6 (Python 3.12) — the
+# full test suite is green on these. The bounds cap the next major (pandas 4,
+# numpy 3) which may introduce breaking API changes; bump after re-validating.
+dependencies = [
+    "pandas>=2.0,<4",
+    "numpy>=1.24,<3",
+    "geopy>=2.3,<3",
+]
+
+[project.optional-dependencies]
+# Excel output via ais_engine.export.grid_to_excel (lazy-imported, optional).
+excel = [
+    "openpyxl>=3.1,<4",
+]
+dev = [
+    "pytest>=7.4",
+    "openpyxl>=3.1,<4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Ship the PEP 561 typing marker so downstream type checkers trust the inline
+# annotations (the code is fully typed).
+[tool.setuptools.package-data]
+ais_engine = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
