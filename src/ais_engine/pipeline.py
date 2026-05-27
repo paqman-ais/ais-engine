@@ -16,9 +16,12 @@ from datetime import datetime
 import pandas as pd
 
 from .fuel import get_pollution_data
-from .grid import GridAggregator, GridRange, aggregate_to_grid
+from .grid import GridAggregator, GridRange, aggregate_value_to_grid
 from .interpolation import build_interpolated_track
+from .models import ShipParams
 from .repository import AISRepository
+
+__all__ = ["GridInfo", "QueryParams", "compute_pollution", "run_grid"]
 
 
 @dataclass
@@ -56,6 +59,38 @@ def _resolve_mmsis(repo: AISRepository, params: QueryParams) -> list[int]:
     return repo.get_mmsis(params.region, params.start_date, params.end_date)
 
 
+def compute_pollution(
+    track: pd.DataFrame, ship: ShipParams, *, interpolate: bool = False
+) -> pd.DataFrame:
+    """Per-point fuel/emission rows for one ship's track (ADR-0002 Silver).
+
+    This is the public, stable entry point that the platform calls ONCE per
+    point to materialize the Silver layer. It promotes the internal
+    :func:`ais_engine.fuel.get_pollution_data` (plus the optional interpolation
+    pre-pass) to a clean public API and is NOT aggregated to a grid.
+
+    When ``interpolate`` is False this mirrors the no-interp ``create()`` point
+    pipeline (raw points). When True it first builds the moving/stationary
+    interpolated track (``create_linear()``) and then runs the point pipeline.
+
+    The returned DataFrame carries the input's identifying columns where present
+    (``reg_date``, ``mmsi``/``user_id``, ``latitude``, ``longitude``) plus the
+    per-point computed columns ``time_diff_hours``, ``distance_km``,
+    ``speed_km/h``, ``speed_kn``, ``main_usage``, ``aux_usage`` and
+    ``total_usage`` (= ``main_usage + aux_usage``, the value stored per point and
+    later rolled up into a grid).
+
+    Empty-result contract (unchanged): the outlier filter + mandatory first-row
+    drop mean a track with <= 1 surviving row yields an empty frame.
+    """
+    if interpolate and not track.empty:
+        track = build_interpolated_track(track)
+
+    pollution = get_pollution_data(track, ship)
+    pollution["total_usage"] = pollution["main_usage"] + pollution["aux_usage"]
+    return pollution
+
+
 def run_grid(
     repo: AISRepository, params: QueryParams, grid_info: GridInfo, *, interpolate: bool = False
 ) -> pd.DataFrame:
@@ -87,16 +122,14 @@ def run_grid(
         if track.empty:
             continue
 
-        if interpolate:
-            track = build_interpolated_track(track)
-            if track.empty:
-                continue
-
-        pollution_df = get_pollution_data(track, ship)
+        # One code path: Silver per-point compute (compute_pollution) -> grid
+        # aggregation over the per-point ``total_usage``, so run_grid's numbers
+        # are guaranteed identical to the public compute/aggregate APIs.
+        pollution_df = compute_pollution(track, ship, interpolate=interpolate)
         if pollution_df.empty:
             continue
 
-        ship_grid = aggregate_to_grid(pollution_df, grid_range)
+        ship_grid = aggregate_value_to_grid(pollution_df, grid_range, value_col="total_usage")
         grid = grid.add(ship_grid, fill_value=0)
 
     return grid

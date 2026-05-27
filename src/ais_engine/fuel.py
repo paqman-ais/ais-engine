@@ -11,6 +11,8 @@ so it is fully unit-testable offline.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 from geopy.distance import geodesic
@@ -223,3 +225,123 @@ def get_pollution_data(df: pd.DataFrame, ship: ShipParams) -> pd.DataFrame:
     filtered = get_aux_usage(ship, filtered)
     filtered.drop(columns=["is_outlier"], inplace=True)
     return filtered
+
+
+@dataclass(frozen=True)
+class SegmentUsage:
+    """One segment's per-point usage (the building block for streaming).
+
+    The fields mirror the per-row columns :func:`get_pollution_data` produces
+    for the *current* point of a consecutive pair (the value is attributed to
+    the second/arrival point, exactly as in the track pipeline).
+    """
+
+    distance_km: float
+    speed_kmh: float
+    speed_kn: float
+    time_diff_hours: float
+    main_usage: float
+    aux_usage: float
+    total_usage: float
+
+
+def compute_segment(prev_point: dict, curr_point: dict, ship: ShipParams) -> SegmentUsage:
+    """Compute ONE segment's main/aux fuel from two consecutive points.
+
+    This is the stateless, pure building block for phase-2 stateful streaming
+    (ADR-0002): given the previous and current AIS points plus the ship
+    particulars, it reproduces the EXACT per-segment math used by the whole-track
+    pipeline (:func:`get_pollution_data`):
+
+      1. ``distance_km`` = geodesic(prev, curr), rounded to 10 dp (faithful)
+      2. ``time_diff_hours`` = ``curr.time_diff_second`` / 3600 — i.e. the time
+         from the previous point to the current one
+      3. ``speed_km/h`` = distance_km / time_diff_hours ; ``speed_kn`` = * KM_TO_KN
+         (non-finite results from a 0s / 0-distance gap are replaced with 0, same
+         robustness guard as the track pipeline)
+      4. ``main_usage`` (cubic load factor; zeroed when ``speed_kn <= 0.3`` OR
+         ``time_diff_hours >= 1``)
+      5. ``aux_usage`` (aux load factor keyed on ``speed_kn``; zeroed when
+         ``curr.sog > 0.3`` AND ``time_diff_hours >= 1``)
+
+    Each point is a mapping with ``latitude``, ``longitude`` and ``sog``. The
+    current point must also provide ``time_diff_second`` (seconds since the
+    previous point); if omitted it is derived from ``reg_date`` deltas when both
+    points carry a ``reg_date``.
+
+    Scope (caller's responsibility, NOT done here): whole-track concerns —
+    ``speed_kn > 30`` outlier removal, the mandatory first-row drop, and linear
+    interpolation — belong to the track/stream pipeline, not to this per-segment
+    primitive. ``compute_segment`` computes a segment exactly as the pipeline
+    would for that same consecutive pair on a clean track.
+    """
+    time_diff_second = curr_point.get("time_diff_second")
+    if time_diff_second is None:
+        prev_t = prev_point.get("reg_date")
+        curr_t = curr_point.get("reg_date")
+        if prev_t is None or curr_t is None:
+            raise ValueError(
+                "compute_segment needs curr_point['time_diff_second'] or a "
+                "'reg_date' on both points to derive it."
+            )
+        time_diff_second = (pd.Timestamp(curr_t) - pd.Timestamp(prev_t)).total_seconds()
+
+    time_diff_hours = float(time_diff_second) / 3600
+
+    distance_km = round(
+        calculate_distance(
+            prev_point["latitude"],
+            prev_point["longitude"],
+            curr_point["latitude"],
+            curr_point["longitude"],
+        ),
+        10,
+    )
+
+    # speed_km/h = distance / time; guard the 0/0 (and 0-time) edge exactly like
+    # get_pollution_data (non-finite -> 0).
+    if time_diff_hours == 0 or not np.isfinite(time_diff_hours):
+        speed_kmh = 0.0
+    else:
+        speed_kmh = distance_km / time_diff_hours
+    if not np.isfinite(speed_kmh):
+        speed_kmh = 0.0
+    speed_kn = speed_kmh * KM_TO_KN
+    if not np.isfinite(speed_kn):
+        speed_kn = 0.0
+
+    # Main usage (spec 3.6): cubic load factor, zeroed when stationary or large gap.
+    if speed_kn <= STATIONARY_SPEED_KN or time_diff_hours >= LARGE_GAP_HOURS:
+        main_usage = 0.0
+    else:
+        load_factor = (speed_kmh / (ship.service_speed * KN_TO_KM)) ** 3
+        main_usage = (
+            ship.total_kw_main_eng
+            * load_factor
+            * time_diff_hours
+            * get_sfoc(ship.total_kw_main_eng)
+            * SFOC_MULTIPLIER
+        )
+
+    # Aux usage (spec 3.7): load factor keyed on speed_kn; zeroed only when
+    # moving (sog>0.3) AND large gap. sog is used ONLY for the zeroing gate.
+    sog = curr_point["sog"]
+    if sog > STATIONARY_SOG_KN and time_diff_hours >= LARGE_GAP_HOURS:
+        aux_usage = 0.0
+    else:
+        aux_usage = (
+            ship.aux_engine_total_kw
+            * _aux_factor_scalar(speed_kn, ship.ship_type)
+            * time_diff_hours
+            * AUX_USAGE_FACTOR
+        )
+
+    return SegmentUsage(
+        distance_km=distance_km,
+        speed_kmh=speed_kmh,
+        speed_kn=speed_kn,
+        time_diff_hours=time_diff_hours,
+        main_usage=main_usage,
+        aux_usage=aux_usage,
+        total_usage=main_usage + aux_usage,
+    )

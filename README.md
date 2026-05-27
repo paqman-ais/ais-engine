@@ -4,6 +4,12 @@ A clean, tested, **DB-free** Python port of the verified AIS **fuel-usage emissi
 
 This is **P0** of a fresh rebuild. Faithfulness to the verified Jupyter logic is the #1 priority.
 
+> **v0.3.0** evolves the public API surface to serve the ADR-0002 layered data
+> architecture (Bronze/Silver/Gold). The calculation **formulas are unchanged**
+> — this release exposes the intermediate stages as stable public APIs
+> (`compute_pollution`, `rebin_cells_to_grid`, `compute_segment`); `run_grid` is
+> unchanged in signature. See "ADR-0002 layered APIs" below.
+
 - **Spec (authoritative):** `ais-docs/logic-spec/01-core-emission-grid-logic.md`
 - **Reference code (faithful source):** `ais-docs/reference/legacy-jupyter/ais_modules/`
 
@@ -29,11 +35,11 @@ engine/
 │   ├── py.typed                    PEP 561 typing marker (fully typed)
 │   ├── constants.py                spec §2 constants (KN_TO_KM, SFOC factors, thresholds)
 │   ├── models.py                   ShipParams dataclass (replaces SQLAlchemy ShipInfo)
-│   ├── fuel.py                     PURE calc: SFOC, load factors, distance/speed, main/aux usage, point pipeline
-│   ├── grid.py                     PURE: GridAggregator + aggregate_to_grid (pd.cut binning + cell sum)
+│   ├── fuel.py                     PURE calc: SFOC, load factors, distance/speed, main/aux usage, point pipeline, compute_segment
+│   ├── grid.py                     PURE: GridAggregator + aggregate_value_to_grid / rebin_cells_to_grid / aggregate_to_grid
 │   ├── interpolation.py            PURE: moving/stationary split + 1s resample + linear interpolate
 │   ├── repository.py               data access: AISRepository ABC + InMemory/CSV impls (NO real DB)
-│   ├── pipeline.py                 orchestration: run_grid(repo, params, grid_info, interpolate=)
+│   ├── pipeline.py                 orchestration: compute_pollution (Silver) + run_grid(repo, params, grid_info, interpolate=)
 │   └── export.py                   OUTPUT ADAPTER (separate surface): grid_to_excel / grid_to_csv
 └── tests/
     ├── test_fuel.py                SFOC, aux LF=speed_kn pin, cubic LF, zeroing, dt=0 guard, degenerate tracks
@@ -41,6 +47,7 @@ engine/
     ├── test_interpolation.py       1s resample + gap-break (no bridging) + value-pinned interpolation
     ├── test_export.py              grid_to_excel / grid_to_csv adapters + not-in-core-__all__
     ├── test_regression.py          SELF-CONSISTENCY (not a verified golden) + real-golden harness/TODO
+    ├── test_v3_consistency.py      v0.3 APIs numerically consistent with run_grid (Silver/Gold/segment)
     └── fixtures/
         ├── synthetic_track.csv     6-point deterministic track (ais_new2 schema)
         └── synthetic_ships.csv     one ship (ship_info schema)
@@ -73,6 +80,57 @@ Here:
 | §2 aux load factor keyed on **`speed_kn`** (≥10→0.3; 0.3–10→0.5; <0.3→0.6 Tanker/Passenger else 0.4) | `fuel.get_aux_load_factor` |
 | §4 grid build (center+radius+grid_size geodesic stepping) + `pd.cut` binning + per-cell sum | `grid.GridAggregator`, `grid.aggregate_to_grid` |
 | §5 no-interp `create()` vs linear-interp `create_linear()` | `pipeline.run_grid(..., interpolate=False/True)`, `interpolation.build_interpolated_track` |
+
+## ADR-0002 layered APIs (v0.3.0 — formulas unchanged)
+
+ADR-0002 splits the platform into layers so the heavy, sequential per-point
+calculation runs **once** (not on every analysis): compute per-point fuel once
+(Silver, stored), pre-aggregate to a fine grid (Gold), and re-bin to the user's
+grid on demand. v0.3.0 exposes those intermediate stages as stable public APIs.
+**No math changed** — these are restructurings/exposures of existing logic, and
+the consistency tests prove they produce the same numbers as `run_grid`.
+
+| ADR-0002 layer | Public API (v0.3) | What it does |
+|---|---|---|
+| **Bronze** (raw points) | — (your repository) | append-only AIS position points; `AISRepository.get_ais_track` returns them ordered + de-duped with `time_diff_second` |
+| **Silver** (per-point fuel) | **`compute_pollution(track, ship, *, interpolate=False)`** | track → per-point fuel/emission **rows** (NOT a grid). Columns include `reg_date`, `mmsi`/`user_id` (if present), `latitude`, `longitude`, `speed_kn`, `main_usage`, `aux_usage`, `total_usage` (= main+aux). This is what you store as Silver. |
+| **Gold** (pre-summed roll-up) | **`rebin_cells_to_grid(cells_df, grid_range, value_col="total_usage")`** | already-summed cells (each row = lat, lon, pre-computed value) → a target `GridRange`. Re-binning pre-summed fine cells, NOT raw points. Works with any lat/lon cell representation. |
+| streaming primitive (phase-2) | **`compute_segment(prev_point, curr_point, ship) -> SegmentUsage`** | ONE segment's main/aux fuel from two consecutive points + ship params; the pure building block for stateful streaming. Same per-segment math as the track pipeline. |
+| whole track → grid (v0.2) | `run_grid(repo, params, grid_info, interpolate=)` | unchanged signature; now a thin composition of `compute_pollution` + grid aggregation, so all paths share one set of frozen formulas. |
+
+`aggregate_to_grid` (per-point `main_usage + aux_usage` → grid) and
+`rebin_cells_to_grid` (pre-summed cells → grid) are both thin wrappers over a
+single shared internal primitive, `grid.aggregate_value_to_grid(cells_df,
+grid_range, value_col)`, which sums an arbitrary `value_col` over `(latitude,
+longitude)` into the target grid. One code path handles both per-point usage
+aggregation and Gold re-binning, so behavior for existing `aggregate_to_grid`
+callers is unchanged.
+
+```python
+from ais_engine import compute_pollution, rebin_cells_to_grid, compute_segment
+
+# Silver: compute per-point rows ONCE, store them.
+silver = compute_pollution(track, ship)            # track -> per-point rows
+silver_linear = compute_pollution(track, ship, interpolate=True)
+
+# Gold re-bin: already-summed fine cells -> a user's target grid on demand.
+target_grid = rebin_cells_to_grid(fine_cells, target_grid_range)  # value_col="total_usage"
+
+# Streaming primitive (phase-2): one consecutive pair -> one segment's fuel.
+seg = compute_segment(prev_point, curr_point, ship)  # -> SegmentUsage(main_usage, aux_usage, total_usage, ...)
+```
+
+**`compute_segment` scope (caller's responsibility):** whole-track concerns —
+`speed_kn > 30` outlier removal, the mandatory first-row drop, and linear
+interpolation — belong to the track/stream pipeline, NOT to this per-segment
+primitive. On a clean track (no outliers) `compute_segment` over each
+consecutive pair reproduces `compute_pollution`'s per-row `main_usage` /
+`aux_usage` exactly (pinned by `tests/test_v3_consistency.py`).
+
+**Deferred (out of scope now):** a geohash/H3 **base-grid helper** that
+*produces* a fixed fine-cell grid is not included. `rebin_cells_to_grid` already
+works with any lat/lon cell representation, so the helper can be added later
+without touching the engine. **TODO:** add a geohash/H3 fine base-grid builder.
 
 ## Aux load factor uses `speed_kn` (faithful)
 
@@ -154,20 +212,26 @@ The stable, supported surface is exactly:
 
 ```python
 __all__ = [
+    # v0.2 surface (unchanged)
     "run_grid", "GridInfo", "QueryParams",
     "AISRepository", "InMemoryRepository", "CSVRepository",
     "ShipParams", "GridRange",
     "KN_TO_KM", "KM_TO_KN", "SFOC_MULTIPLIER", "AUX_USAGE_FACTOR",
+    # v0.3 additions (ADR-0002 layered data architecture)
+    "compute_pollution",    # Silver: track -> per-point rows
+    "rebin_cells_to_grid",  # Gold: pre-summed cells -> target grid
+    "compute_segment",      # streaming primitive: one segment's fuel
+    "SegmentUsage",
 ]
 ```
 
 Internal helpers (`get_main_usage`, `get_aux_usage`, `get_pollution_data`,
 `get_sfoc`, `get_load_factor`, `get_aux_load_factor`, `calculate_distance`,
-`GridAggregator`, `aggregate_to_grid`, `build_interpolated_track`,
-`resample_and_interpolate_fast_sog`) remain importable from their submodules but
-are **not** part of the locked API. Output adapters (`grid_to_excel`,
-`grid_to_csv`) live in `ais_engine.export` and are likewise outside core
-`__all__`.
+`GridAggregator`, `aggregate_to_grid`, `aggregate_value_to_grid`,
+`build_interpolated_track`, `resample_and_interpolate_fast_sog`) remain
+importable from their submodules but are **not** part of the locked API. Output
+adapters (`grid_to_excel`, `grid_to_csv`) live in `ais_engine.export` and are
+likewise outside core `__all__`.
 
 `get_main_usage` / `get_aux_usage` copy their input and never mutate the caller's
 DataFrame.

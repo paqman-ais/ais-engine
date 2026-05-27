@@ -83,17 +83,30 @@ class GridAggregator:
         return GridRange(grid=grid, lats_bins=lats_bins, lons_bins=lons_bins, lats=lats, lons=lons)
 
 
-def aggregate_to_grid(pollution_df: pd.DataFrame, grid_range: GridRange) -> pd.DataFrame:
-    """Bin each track point and sum ``main_usage + aux_usage`` per cell.
+def aggregate_value_to_grid(
+    cells_df: pd.DataFrame, grid_range: GridRange, value_col: str = "value"
+) -> pd.DataFrame:
+    """Bin each ``(latitude, longitude)`` row and sum ``value_col`` per cell.
 
-    Faithful to the binning + accumulation loop in ``create``/``create_linear``
-    (spec section 4): ``pd.cut`` assigns ``lat_bin``/``lon_bin`` labels, then
-    each row's total fuel usage is added to the matching grid cell.
+    This is the shared, general binning + accumulation primitive (spec section
+    4): ``pd.cut`` assigns ``lat_bin``/``lon_bin`` labels, then each row's
+    ``value_col`` is added to the matching grid cell.
+
+    It is intentionally agnostic about what the value represents, so the SAME
+    routine serves two ADR-0002 layers:
+
+    - **per-point usage aggregation** (Silver -> on-demand grid): pass a frame
+      of per-point rows with a precomputed ``total_usage`` column;
+    - **Gold re-bin** (pre-summed fine cells -> target grid): pass a frame of
+      already-summed cells, each carrying a lat, lon and a pre-computed value.
+
+    Rows whose binned label falls outside the grid are ignored (faithful to the
+    reference loop, which only accumulates cells present in the grid).
 
     Returns a *new* grid DataFrame (does not mutate ``grid_range.grid``).
     """
     grid = grid_range.grid.copy()
-    df = pollution_df.copy()
+    df = cells_df.copy()
 
     df["lat_bin"] = pd.cut(
         df["latitude"], bins=grid_range.lats_bins, labels=grid_range.lats, include_lowest=True
@@ -106,6 +119,50 @@ def aggregate_to_grid(pollution_df: pd.DataFrame, grid_range: GridRange) -> pd.D
         lat_bin = row["lat_bin"]
         lon_bin = row["lon_bin"]
         if lat_bin in grid.index and lon_bin in grid.columns:
-            grid.loc[lat_bin, lon_bin] += row["aux_usage"] + row["main_usage"]
+            grid.loc[lat_bin, lon_bin] += row[value_col]
 
     return grid
+
+
+def rebin_cells_to_grid(
+    cells_df: pd.DataFrame, grid_range: GridRange, value_col: str = "total_usage"
+) -> pd.DataFrame:
+    """Re-bin already-summed cells into a target grid (ADR-0002 Gold re-bin).
+
+    Each row of ``cells_df`` is a pre-summed cell carrying ``latitude``,
+    ``longitude`` and a pre-computed value in ``value_col`` (default
+    ``total_usage``). Their values are summed into the target ``grid_range``.
+
+    This is NOT raw-point aggregation: the input is expected to already be
+    aggregated (e.g. a fixed fine geohash/H3 base grid x time bucket). Because
+    re-binning only re-groups existing sums, the result of re-binning a fine
+    grid into a coarser target equals aggregating the underlying points into
+    that target directly (within float tolerance), as long as every fine cell
+    falls inside a target cell.
+
+    It works with any lat/lon cell representation (the cell lat/lon are simply
+    the points fed to ``pd.cut``); a geohash/H3 base-grid helper that *produces*
+    such cells is deferred (see README TODO).
+
+    Returns a *new* grid DataFrame (does not mutate ``grid_range.grid``).
+    """
+    return aggregate_value_to_grid(cells_df, grid_range, value_col=value_col)
+
+
+def aggregate_to_grid(pollution_df: pd.DataFrame, grid_range: GridRange) -> pd.DataFrame:
+    """Bin each track point and sum ``main_usage + aux_usage`` per cell.
+
+    Faithful to the binning + accumulation loop in ``create``/``create_linear``
+    (spec section 4): ``pd.cut`` assigns ``lat_bin``/``lon_bin`` labels, then
+    each row's total fuel usage is added to the matching grid cell.
+
+    Thin wrapper over :func:`aggregate_value_to_grid`: it materializes a
+    ``main_usage + aux_usage`` total column and delegates the binning, so the
+    per-point and re-bin paths share one code path (no behavior change for
+    existing callers).
+
+    Returns a *new* grid DataFrame (does not mutate ``grid_range.grid``).
+    """
+    df = pollution_df.copy()
+    df["_total_usage"] = df["aux_usage"] + df["main_usage"]
+    return aggregate_value_to_grid(df, grid_range, value_col="_total_usage")
