@@ -70,6 +70,40 @@ def get_sfoc(main_eng_kw: float) -> int:
     return 0
 
 
+# IHS Statcode 5 ship-type strings that should resolve to the
+# tanker/passenger auxiliary-load branch (AUX_LF_LOW_TANKER_PAX = 0.6) when
+# stationary. Matching is substring-based (case-sensitive — IHS values are
+# Title Case) so e.g. "Crude Oil Tanker", "LPG Tanker", "Chemical Tanker,
+# Inland Waterways" all hit "Tanker".
+#
+# The earlier port only matched "Tanker" and "Passenger" verbatim, which
+# leaked clearly tanker-class vessels into the OTHER branch (0.4):
+#   - "Liquid bulk ships" (518 ships in the seed CSV)
+#   - "FSO, Oil" / "FPSO, Oil" / "FSO, Gas" — floating storage/offloading
+#   - "Ore/Oil Carrier", "Bulk/Oil Carrier (OBO)", "Bulk/Oil/Chemical
+#     Carrier (CLEANBU)" — combination carriers that haul oil
+# and passenger-class:
+#   - "Cruise Ship, Inland Waterways"
+# Add a new keyword here when a new IHS class needs to map to this branch.
+_TANKER_KEYWORDS: tuple[str, ...] = (
+    "Tanker",
+    "Liquid bulk",
+    "FSO",
+    "FPSO",
+    "/Oil",  # catches Ore/Oil, Bulk/Oil, Bulk/Oil/Chemical
+)
+_PASSENGER_KEYWORDS: tuple[str, ...] = (
+    "Passenger",
+    "Cruise",
+)
+
+
+def _is_tanker_or_passenger(ship_type: str) -> bool:
+    return any(kw in ship_type for kw in _TANKER_KEYWORDS) or any(
+        kw in ship_type for kw in _PASSENGER_KEYWORDS
+    )
+
+
 def _aux_factor_scalar(speed_kn: float, ship_type: str) -> float:
     """Auxiliary load factor for a single ``speed_kn`` value (spec section 2).
 
@@ -81,7 +115,7 @@ def _aux_factor_scalar(speed_kn: float, ship_type: str) -> float:
     elif STATIONARY_SOG_KN <= speed_kn < AUX_SPEED_HIGH_KN:
         return AUX_LF_MID
     elif speed_kn < STATIONARY_SOG_KN:
-        if "Tanker" in ship_type or "Passenger" in ship_type:
+        if _is_tanker_or_passenger(ship_type):
             return AUX_LF_LOW_TANKER_PAX
         return AUX_LF_LOW_OTHER
     return 0.0

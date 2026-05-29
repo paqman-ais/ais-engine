@@ -12,6 +12,7 @@ import pytest
 
 from ais_engine import constants as C
 from ais_engine.fuel import (
+    _is_tanker_or_passenger,
     calculate_distance,
     get_aux_load_factor,
     get_aux_usage,
@@ -329,3 +330,77 @@ def test_get_pollution_data_all_outliers_is_empty():
     df["time_diff_second"] = df["reg_date"].diff().dt.total_seconds()
     out = get_pollution_data(df, ship)
     assert out.empty
+
+
+# --- Tanker/Passenger classification for AUX_LF_LOW branch ---
+#
+# Pins the substring matching of IHS Statcode 5 ship_type strings to the
+# correct auxiliary-load branch when stationary. The earlier port only
+# matched "Tanker" and "Passenger" verbatim, leaking clearly tanker-class
+# vessels (Liquid bulk, FSO/FPSO, combination Oil carriers) and Cruise
+# Inland Waterways into the OTHER branch. These tests guard against a
+# regression.
+
+
+@pytest.mark.parametrize(
+    "ship_type",
+    [
+        # Direct
+        "Tanker",
+        # Real IHS strings from the seed CSV — Tanker branch
+        "Crude Oil Tanker",
+        "Chemical/Products Tanker",
+        "LPG Tanker",
+        "LNG Tanker",
+        "Asphalt/Bitumen Tanker",
+        "Chemical Tanker, Inland Waterways",
+        # New keyword: Liquid bulk
+        "Liquid bulk ships",
+        # New keyword: FSO / FPSO
+        "FSO, Oil",
+        "FPSO, Oil",
+        "FSO, Gas",
+        # New keyword: /Oil (combination carriers)
+        "Ore/Oil Carrier",
+        "Bulk/Oil Carrier (OBO)",
+        "Bulk/Oil/Chemical Carrier (CLEANBU)",
+        # Passenger branch
+        "Passenger Ship",
+        "Passenger/Ro-Ro Ship (Vehicles)",
+        "Passenger/Cruise",
+        # New keyword: Cruise
+        "Cruise Ship, Inland Waterways",
+    ],
+)
+def test_aux_branch_tanker_or_passenger_match(ship_type):
+    assert _is_tanker_or_passenger(ship_type) is True
+
+
+@pytest.mark.parametrize(
+    "ship_type",
+    [
+        # Real IHS strings from the seed CSV that must remain OTHER
+        "Bulk Carrier",
+        "General Cargo Ship",
+        "Container Ship (Fully Cellular)",
+        "Fishing Vessel",
+        "Tug",
+        "Yacht",
+        "Vehicles Carrier",
+        "Dry bulk carriers",
+        "Refrigerated Cargo Ship",
+        "Ro-Ro Cargo Ship",
+        "Platform Supply Ship",
+        "Patrol Vessel",
+        "",  # missing/empty
+    ],
+)
+def test_aux_branch_other_excludes_non_tanker(ship_type):
+    assert _is_tanker_or_passenger(ship_type) is False
+
+
+def test_aux_factor_low_uses_tanker_branch_for_liquid_bulk():
+    # speed_kn < 0.3 → AUX_LF_LOW_* branch.
+    speed = pd.Series([0.0])
+    assert get_aux_load_factor(speed, "Liquid bulk ships").iloc[0] == C.AUX_LF_LOW_TANKER_PAX
+    assert get_aux_load_factor(speed, "Bulk Carrier").iloc[0] == C.AUX_LF_LOW_OTHER
