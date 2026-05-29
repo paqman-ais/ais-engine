@@ -246,7 +246,7 @@ def test_v3_public_surface_and_version():
     """
     import ais_engine
 
-    assert ais_engine.__version__ == "0.5.0"
+    assert ais_engine.__version__ == "0.6.0"
     # v0.3 additions are exported.
     for name in ("compute_pollution", "rebin_cells_to_grid", "compute_segment", "SegmentUsage"):
         assert name in ais_engine.__all__, name
@@ -256,6 +256,13 @@ def test_v3_public_surface_and_version():
         "compute_emissions_kg", "add_emission_columns", "EmissionKg", "POLLUTANTS",
         "EMISSION_FACTOR_NOX_KG_PER_TON", "EMISSION_FACTOR_SOX_KG_PER_TON",
         "EMISSION_FACTOR_PM_KG_PER_TON", "EMISSION_FACTOR_CO2_KG_PER_TON",
+    ):
+        assert name in ais_engine.__all__, name
+        assert hasattr(ais_engine, name), name
+    # v0.6 additions (speed → operational mode label).
+    for name in (
+        "classify_mode", "add_mode_column", "MODES",
+        "MODE_CRUISING", "MODE_SLOW_STEAMING", "MODE_HOTELING",
     ):
         assert name in ais_engine.__all__, name
         assert hasattr(ais_engine, name), name

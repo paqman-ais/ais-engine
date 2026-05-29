@@ -43,6 +43,14 @@ from .constants import (
 )
 from .emission import POLLUTANTS, EmissionKg, add_emission_columns, compute_emissions_kg
 from .fuel import SegmentUsage, compute_segment
+from .mode import (
+    MODE_CRUISING,
+    MODE_HOTELING,
+    MODE_SLOW_STEAMING,
+    MODES,
+    add_mode_column,
+    classify_mode,
+)
 from .grid import GridRange, rebin_cells_to_grid
 from .models import ShipParams
 from .pipeline import GridInfo, QueryParams, compute_pollution, run_grid
@@ -76,6 +84,13 @@ __all__ = [
     "EMISSION_FACTOR_SOX_KG_PER_TON",
     "EMISSION_FACTOR_PM_KG_PER_TON",
     "EMISSION_FACTOR_CO2_KG_PER_TON",
+    # v0.6 additions (Phase 2 — speed → operational mode label)
+    "classify_mode",
+    "add_mode_column",
+    "MODES",
+    "MODE_CRUISING",
+    "MODE_SLOW_STEAMING",
+    "MODE_HOTELING",
 ]
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
