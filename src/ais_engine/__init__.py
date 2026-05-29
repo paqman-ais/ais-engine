@@ -33,10 +33,15 @@ from __future__ import annotations
 
 from .constants import (
     AUX_USAGE_FACTOR,
+    EMISSION_FACTOR_CO2_KG_PER_TON,
+    EMISSION_FACTOR_NOX_KG_PER_TON,
+    EMISSION_FACTOR_PM_KG_PER_TON,
+    EMISSION_FACTOR_SOX_KG_PER_TON,
     KM_TO_KN,
     KN_TO_KM,
     SFOC_MULTIPLIER,
 )
+from .emission import POLLUTANTS, EmissionKg, add_emission_columns, compute_emissions_kg
 from .fuel import SegmentUsage, compute_segment
 from .grid import GridRange, rebin_cells_to_grid
 from .models import ShipParams
@@ -62,6 +67,15 @@ __all__ = [
     "rebin_cells_to_grid",  # Gold: pre-summed cells -> target grid
     "compute_segment",     # streaming primitive: one segment's fuel
     "SegmentUsage",
+    # v0.5 additions (Phase 1.1 — fuel -> pollutant emissions in kg, IMO defaults)
+    "compute_emissions_kg",
+    "add_emission_columns",
+    "EmissionKg",
+    "POLLUTANTS",
+    "EMISSION_FACTOR_NOX_KG_PER_TON",
+    "EMISSION_FACTOR_SOX_KG_PER_TON",
+    "EMISSION_FACTOR_PM_KG_PER_TON",
+    "EMISSION_FACTOR_CO2_KG_PER_TON",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"

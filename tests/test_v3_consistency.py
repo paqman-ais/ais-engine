@@ -239,12 +239,24 @@ def test_compute_segment_zeroing_gates_match_formula():
 # --- Housekeeping: v0.3 public surface ------------------------------------------
 
 def test_v3_public_surface_and_version():
-    """v0.3 adds the new names to __all__ while keeping the v0.2 surface."""
+    """Public surface lock — bump expected version + new-name set on each release.
+
+    The lock prevents accidental removal of exported names. When a release adds
+    names, append them below; when it bumps the version, update the literal.
+    """
     import ais_engine
 
-    assert ais_engine.__version__ == "0.3.0"
+    assert ais_engine.__version__ == "0.5.0"
     # v0.3 additions are exported.
     for name in ("compute_pollution", "rebin_cells_to_grid", "compute_segment", "SegmentUsage"):
+        assert name in ais_engine.__all__, name
+        assert hasattr(ais_engine, name), name
+    # v0.5 additions (fuel -> pollutant emissions in kg, IMO defaults).
+    for name in (
+        "compute_emissions_kg", "add_emission_columns", "EmissionKg", "POLLUTANTS",
+        "EMISSION_FACTOR_NOX_KG_PER_TON", "EMISSION_FACTOR_SOX_KG_PER_TON",
+        "EMISSION_FACTOR_PM_KG_PER_TON", "EMISSION_FACTOR_CO2_KG_PER_TON",
+    ):
         assert name in ais_engine.__all__, name
         assert hasattr(ais_engine, name), name
     # v0.2 surface is preserved.

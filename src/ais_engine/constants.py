@@ -33,3 +33,12 @@ AUX_LF_LOW_OTHER = 0.4        # sog < 0.3 otherwise
 # A gap larger than this many seconds breaks a moving segment so it is not
 # bridged by interpolation.
 INTERP_GAP_THRESHOLD_SECONDS = 3600
+
+# Emission factors (kg pollutant per ton fuel) — IMO defaults, 1% sulfur.
+# Reference: legacy ALGORITHM.md section 3 (table "Emission Factors (IMO
+# Standards)"). When fuel sulfur assumption changes, override SOx; the
+# others are fuel-mass linear regardless of sulfur content.
+EMISSION_FACTOR_NOX_KG_PER_TON = 57.0
+EMISSION_FACTOR_SOX_KG_PER_TON = 20.0   # assumes 1% S fuel
+EMISSION_FACTOR_PM_KG_PER_TON = 1.5
+EMISSION_FACTOR_CO2_KG_PER_TON = 3114.0
